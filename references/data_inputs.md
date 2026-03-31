@@ -76,6 +76,14 @@ The repo root keeps a compatibility wrapper at:
 - `strategy_reminders`
   Persist weekly pretrade reminders, weekly trade reminders, and monthly cash-inflow reminders based on the schedule configured in `SKILL.md`.
 
+## Source Of Truth Rules
+
+- `SKILL.md` stores strategy configuration only.
+- SQLite stores live account state and trade history.
+- Do not write live `cash_pool`, `position_units`, or `avg_cost_price` back into `SKILL.md`.
+- `capital.initial_cash` in `SKILL.md` is only a bootstrap value for initializing a new account record.
+  Once the account exists, the database becomes the only source of truth for balances and holdings.
+
 ## Important Constraint
 
 Do not infer strategy state from market data alone.

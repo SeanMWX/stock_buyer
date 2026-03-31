@@ -118,6 +118,22 @@ Use these two buckets when maintaining the strategy:
   `price_state.recent_high_lookback_trading_days`
   `price_state.min_trading_days_between_adds`
 
+## State Boundary
+
+Treat `SKILL.md` as strategy configuration only. Do not store live account state in this file.
+
+- `SKILL.md` is the source of truth for strategy rules, thresholds, schedules, and default initialization values.
+- SQLite is the source of truth for live account state and history.
+- Real account fields such as `cash_pool`, `position_units`, `avg_cost_price`, `account_id`, and executed trades must live in the database, not in `SKILL.md`.
+- `capital.initial_cash` is only the default starting amount used when initializing a new strategy account.
+  It is not the current live cash balance after trading starts.
+- After an account exists, update live state only through:
+  `python {baseDir}/scripts/manage_strategy_account.py ...`
+  `python {baseDir}/scripts/record_strategy_trade.py ...`
+  `python {baseDir}/scripts/confirm_strategy_action.py ...`
+- Do not edit `capital.initial_cash` in `SKILL.md` to reflect a new live balance.
+  If the user adds cash or changes holdings, write that change to SQLite instead.
+
 ## Required Inputs
 
 Do not invent missing inputs. If a required field is unavailable, return `skip_data_missing` and explain what is missing.

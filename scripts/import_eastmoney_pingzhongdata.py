@@ -14,7 +14,8 @@ from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FUND_CODE = "011598"
-DEFAULT_DB_PATH = REPO_ROOT / "data" / "funds.sqlite"
+DEFAULT_DB_DIR = Path.home() / ".fund_buying_decision"
+DEFAULT_DB_PATH = DEFAULT_DB_DIR / "fund_buying_decision.db"
 PINGZHONGDATA_URL = "https://fund.eastmoney.com/pingzhongdata/{fund_code}.js"
 VAR_PATTERN = re.compile(r"var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*", re.MULTILINE)
 SOURCE_GENERATED_AT_PATTERN = re.compile(r"/\*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\*/")

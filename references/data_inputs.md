@@ -10,7 +10,11 @@ The skill bundles:
 
 Default database path:
 
-`<repo-root>/data/funds.sqlite`
+`~/.fund_buying_decision/fund_buying_decision.db`
+
+Recommended override pattern for separate datasets:
+
+`--db ~/.fund_buying_decision/<name>.db`
 
 The repo root keeps a compatibility wrapper at:
 
@@ -70,7 +74,7 @@ The repo root keeps a compatibility wrapper at:
 - `strategy_trades`
   Persist cash inflows, manual trades, and strategy-generated buys or sells.
 - `strategy_reminders`
-  Persist Monday pretrade reminders, Tuesday trade reminders, and monthly cash-inflow reminders.
+  Persist weekly pretrade reminders, weekly trade reminders, and monthly cash-inflow reminders based on the schedule configured in `SKILL.md`.
 
 ## Important Constraint
 

@@ -22,48 +22,101 @@ If multiple actions trigger on the same day, prefer the risk-reducing action and
 
 ## Strategy Parameters
 
-Fill or revise this block before relying on the strategy. Treat every `TODO` as unresolved.
+Edit `editable` first. Keep `fixed` stable unless the strategy shape really changes.
 
 ```yaml
 strategy_parameters:
-  universe:
-    allowed_fund_types:
-      - index_fund
-      - equity_fund
-    disallowed_fund_types:
-      - bond_fund
-      - money_market_fund
+  editable:
+    capital:
+      initial_cash: 1000
+      weekly_dca_amount: 100
+      monthly_cash_pool_inflow: 1000
 
-  capital:
-    initial_cash: 1000
-    weekly_dca_amount: 100
-    monthly_cash_pool_inflow: 1000
-    fee_rate_source: fund_current_rate
+    scheduling:
+      weekly_pretrade_reminder:
+        weekday: monday
+        time_local: "09:00"
+      weekly_dca:
+        weekday: tuesday
+      weekly_trade_reminder:
+        weekday: tuesday
+        time_local: "09:30"
+      monthly_cash_inflow:
+        schedule_type: second_to_last_business_day
+        day_of_month: null
+      monthly_cash_inflow_reminder:
+        schedule_type: second_to_last_business_day
+        day_of_month: null
+        time_local: "10:00"
 
-  scheduling:
-    weekly_pretrade_reminder_weekday: monday
-    weekly_dca_weekday: tuesday
-    weekly_trade_reminder_weekday: tuesday
-    monthly_cash_inflow_rule: second_to_last_business_day
-    monthly_cash_inflow_reminder_rule: second_to_last_business_day
-    trade_cutoff_local_time: "15:00"
-    backtest_execution_mode: next_trading_day
-    max_trades_per_day: 1
+    price_state:
+      dip_thresholds_pct: [5, 10, 15]
+      dip_base_buy_amounts: [100, 150, 200]
 
-  price_state:
-    recent_high_lookback_trading_days: 20
-    dip_thresholds_pct: [5, 10, 15]
-    dip_base_buy_amounts: [100, 150, 200]
-    min_trading_days_between_adds: 5
+    take_profit:
+      profit_thresholds_pct: [10, 20]
+      profit_sell_ratios_pct: [10, 20]
 
-  take_profit:
-    profit_thresholds_pct: [10, 20]
-    profit_sell_ratios_pct: [10, 20]
+    risk:
+      max_position_ratio_pct: 80
+      min_position_ratio_pct: 20
 
-  risk:
-    max_position_ratio_pct: 80
-    min_position_ratio_pct: 20
+  fixed:
+    universe:
+      allowed_fund_types:
+        - index_fund
+        - equity_fund
+      disallowed_fund_types:
+        - bond_fund
+        - money_market_fund
+
+    capital:
+      fee_rate_source: fund_current_rate
+
+    scheduling:
+      trade_cutoff_local_time: "15:00"
+      backtest_execution_mode: next_trading_day
+      max_trades_per_day: 1
+
+    price_state:
+      recent_high_lookback_trading_days: 20
+      min_trading_days_between_adds: 5
 ```
+
+## Parameter Groups
+
+Use these two buckets when maintaining the strategy:
+
+- `editable`
+  `capital.initial_cash`
+  `capital.weekly_dca_amount`
+  `capital.monthly_cash_pool_inflow`
+  `scheduling.weekly_pretrade_reminder.weekday`
+  `scheduling.weekly_pretrade_reminder.time_local`
+  `scheduling.weekly_dca.weekday`
+  `scheduling.weekly_trade_reminder.weekday`
+  `scheduling.weekly_trade_reminder.time_local`
+  `scheduling.monthly_cash_inflow.schedule_type`
+  `scheduling.monthly_cash_inflow.day_of_month`
+  `scheduling.monthly_cash_inflow_reminder.schedule_type`
+  `scheduling.monthly_cash_inflow_reminder.day_of_month`
+  `scheduling.monthly_cash_inflow_reminder.time_local`
+  `price_state.dip_thresholds_pct`
+  `price_state.dip_base_buy_amounts`
+  `take_profit.profit_thresholds_pct`
+  `take_profit.profit_sell_ratios_pct`
+  `risk.max_position_ratio_pct`
+  `risk.min_position_ratio_pct`
+
+- `fixed`
+  `universe.allowed_fund_types`
+  `universe.disallowed_fund_types`
+  `capital.fee_rate_source`
+  `scheduling.trade_cutoff_local_time`
+  `scheduling.backtest_execution_mode`
+  `scheduling.max_trades_per_day`
+  `price_state.recent_high_lookback_trading_days`
+  `price_state.min_trading_days_between_adds`
 
 ## Required Inputs
 
@@ -95,9 +148,9 @@ Derived values:
 
 1. Refresh or read fund data.
    For Eastmoney price data, run `python {baseDir}/scripts/import_eastmoney_pingzhongdata.py 011598` or replace `011598` with another fund code.
-2. If today is Monday, issue the weekly pretrade reminder for Tuesday.
-3. If today is Tuesday, issue the trading reminder and then evaluate the strategy.
-4. If today is the second-to-last business day of the month, remind the user to add the monthly cash inflow.
+2. If today and the current local time match the configured `weekly_pretrade_reminder`, issue the weekly pretrade reminder.
+3. If today and the current local time match the configured `weekly_trade_reminder`, issue the trading reminder and then evaluate the strategy.
+4. If today and the current local time match the configured `monthly_cash_inflow_reminder`, remind the user to add the monthly cash inflow.
 5. Record the monthly cash inflow only after it is actually added to `cash_pool`.
    Use `python {baseDir}/scripts/record_strategy_trade.py 011598 --trade-type cash_inflow --gross-amount 1000`.
 6. Update `current_price`, `recent_high`, `total_asset`, and `position_ratio`.
@@ -107,6 +160,19 @@ Derived values:
 10. Re-check max and min position limits after sizing the candidate trade.
 11. Execute at the configured cutoff rule.
    For backtests, prefer `next_trading_day` execution to avoid future leakage.
+
+## Scheduling Rules
+
+- `weekly_pretrade_reminder.weekday` and `weekly_pretrade_reminder.time_local` control the weekly pretrade reminder schedule.
+- `weekly_trade_reminder.weekday` and `weekly_trade_reminder.time_local` control the weekly trade reminder schedule.
+- `weekly_dca.weekday` controls which weekday counts as the DCA trading day.
+- `monthly_cash_inflow.schedule_type` controls the monthly cash-inflow date used by the strategy state.
+- `monthly_cash_inflow_reminder.schedule_type` and `monthly_cash_inflow_reminder.time_local` control the monthly reminder trigger.
+- Supported monthly `schedule_type` values are:
+  - `second_to_last_business_day`
+  - `last_business_day`
+  - `day_of_month`
+- When `schedule_type = day_of_month`, fill `day_of_month` with an integer such as `15` or `28`.
 
 ## Decision Rules
 
@@ -149,6 +215,11 @@ Derived values:
 - If local data is missing, allow the reporting script to refresh the SQLite database first.
 
 ## Strategy Runtime Commands
+
+Default SQLite location:
+
+- `~/.fund_buying_decision/fund_buying_decision.db`
+- Use `--db ~/.fund_buying_decision/<name>.db` when you want a separate database file for another account set or experiment.
 
 - Initialize or overwrite the stored account state:
   `python {baseDir}/scripts/manage_strategy_account.py upsert 011598 --account-id main --cash-pool 1000 --position-units 0 --fund-type equity_fund`

@@ -15,7 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import import_eastmoney_pingzhongdata as importer
 
 
-DEFAULT_DB_PATH = REPO_ROOT / "data" / "funds.sqlite"
+DEFAULT_DB_PATH = importer.DEFAULT_DB_PATH
 DEFAULT_LOOKBACK_DAYS = 20
 
 

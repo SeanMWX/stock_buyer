@@ -66,9 +66,13 @@ Current strategy flow is human-in-the-loop:
 
 Default database path:
 
-`data/funds.sqlite`
+`~/.fund_buying_decision/fund_buying_decision.db`
 
-By default it writes to `data/funds.sqlite` and stores:
+You can also keep separate datasets with:
+
+`--db ~/.fund_buying_decision/<name>.db`
+
+By default it writes to `~/.fund_buying_decision/fund_buying_decision.db` and stores:
 
 - fund metadata
 - raw JS snapshots

@@ -18,12 +18,21 @@ import import_eastmoney_pingzhongdata as importer
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DB_PATH = REPO_ROOT / "data" / "funds.sqlite"
+DEFAULT_DB_PATH = importer.DEFAULT_DB_PATH
 SKILL_MD_PATH = REPO_ROOT / "SKILL.md"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 BUY_TRADE_TYPES = {"buy_dca", "buy_dip", "manual_buy"}
 SELL_TRADE_TYPES = {"sell_take_profit", "manual_sell"}
 EPSILON = 1e-9
+WEEKDAY_LABELS = {
+    "monday": "Monday",
+    "tuesday": "Tuesday",
+    "wednesday": "Wednesday",
+    "thursday": "Thursday",
+    "friday": "Friday",
+    "saturday": "Saturday",
+    "sunday": "Sunday",
+}
 
 
 def utc_now_iso() -> str:
@@ -32,6 +41,12 @@ def utc_now_iso() -> str:
 
 def shanghai_now() -> datetime:
     return datetime.now(tz=SHANGHAI_TZ).replace(microsecond=0)
+
+
+def normalize_weekday(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value).strip().lower()
 
 
 def parse_scalar(value: str) -> Any:
@@ -110,6 +125,36 @@ def parse_strategy_parameter_block(block: str) -> dict[str, Any]:
     return root.get("strategy_parameters", root) if isinstance(root, dict) else {}
 
 
+def deep_merge_mapping(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge_mapping(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def normalize_strategy_parameters(params: dict[str, Any]) -> dict[str, Any]:
+    fixed = params.get("fixed")
+    editable = params.get("editable")
+    if not isinstance(fixed, dict) and not isinstance(editable, dict):
+        return params
+
+    normalized: dict[str, Any] = {}
+    if isinstance(fixed, dict):
+        normalized = deep_merge_mapping(normalized, fixed)
+
+    direct_sections = {key: value for key, value in params.items() if key not in {"fixed", "editable"}}
+    if direct_sections:
+        normalized = deep_merge_mapping(normalized, direct_sections)
+
+    if isinstance(editable, dict):
+        normalized = deep_merge_mapping(normalized, editable)
+
+    return normalized
+
+
 def load_strategy_parameters(skill_md_path: Path = SKILL_MD_PATH) -> dict[str, Any]:
     skill_md = skill_md_path.read_text(encoding="utf-8")
     marker = "## Strategy Parameters"
@@ -128,7 +173,7 @@ def load_strategy_parameters(skill_md_path: Path = SKILL_MD_PATH) -> dict[str, A
     code_end = skill_md.find("```", code_start)
     if code_end < 0:
         raise ValueError(f"Could not find the end of the strategy parameter code block in {skill_md_path}")
-    return parse_strategy_parameter_block(skill_md[code_start:code_end])
+    return normalize_strategy_parameters(parse_strategy_parameter_block(skill_md[code_start:code_end]))
 
 
 def connect_db(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -389,6 +434,39 @@ def second_to_last_business_day(target_date: date) -> date:
     return business_days[-2]
 
 
+def last_business_day(target_date: date) -> date:
+    business_days = previous_business_days_in_month(target_date)
+    return business_days[-1]
+
+
+def last_calendar_day(target_date: date) -> date:
+    if target_date.month == 12:
+        next_month = date(target_date.year + 1, 1, 1)
+    else:
+        next_month = date(target_date.year, target_date.month + 1, 1)
+    return next_month - timedelta(days=1)
+
+
+def resolve_monthly_schedule_date(
+    target_date: date,
+    *,
+    schedule_type: str | None,
+    day_of_month: int | None = None,
+) -> date:
+    normalized_type = str(schedule_type or "second_to_last_business_day").strip().lower()
+    if normalized_type == "second_to_last_business_day":
+        return second_to_last_business_day(target_date)
+    if normalized_type == "last_business_day":
+        return last_business_day(target_date)
+    if normalized_type == "day_of_month":
+        if day_of_month is None:
+            raise ValueError("day_of_month is required when schedule_type=day_of_month")
+        month_end = last_calendar_day(target_date)
+        resolved_day = min(max(int(day_of_month), 1), month_end.day)
+        return date(target_date.year, target_date.month, resolved_day)
+    raise ValueError(f"Unsupported monthly schedule_type: {schedule_type}")
+
+
 def next_business_day(target_date: date) -> date:
     cursor = target_date + timedelta(days=1)
     while not is_business_day(cursor):
@@ -406,6 +484,58 @@ def count_business_days_between(start_date: date, end_date: date) -> int:
             count += 1
         cursor += timedelta(days=1)
     return count
+
+
+def get_weekly_schedule_config(
+    scheduling: dict[str, Any],
+    key: str,
+    *,
+    legacy_weekday_key: str,
+    legacy_time_key: str | None = None,
+) -> dict[str, Any]:
+    nested = scheduling.get(key)
+    weekday = None
+    time_local = None
+    if isinstance(nested, dict):
+        weekday = nested.get("weekday")
+        time_local = nested.get("time_local")
+    if weekday is None:
+        weekday = scheduling.get(legacy_weekday_key)
+    if time_local is None and legacy_time_key:
+        time_local = scheduling.get(legacy_time_key)
+    return {
+        "weekday": normalize_weekday(weekday),
+        "time_local": str(time_local) if time_local not in (None, "") else None,
+    }
+
+
+def get_monthly_schedule_config(
+    scheduling: dict[str, Any],
+    key: str,
+    *,
+    legacy_rule_key: str,
+    legacy_day_of_month_key: str | None = None,
+    legacy_time_key: str | None = None,
+) -> dict[str, Any]:
+    nested = scheduling.get(key)
+    schedule_type = None
+    day_of_month = None
+    time_local = None
+    if isinstance(nested, dict):
+        schedule_type = nested.get("schedule_type")
+        day_of_month = nested.get("day_of_month")
+        time_local = nested.get("time_local")
+    if schedule_type is None:
+        schedule_type = scheduling.get(legacy_rule_key)
+    if day_of_month is None and legacy_day_of_month_key:
+        day_of_month = scheduling.get(legacy_day_of_month_key)
+    if time_local is None and legacy_time_key:
+        time_local = scheduling.get(legacy_time_key)
+    return {
+        "schedule_type": str(schedule_type or "second_to_last_business_day").strip().lower(),
+        "day_of_month": int(day_of_month) if day_of_month is not None else None,
+        "time_local": str(time_local) if time_local not in (None, "") else None,
+    }
 
 
 def compute_max_buy_gross_amount(
@@ -609,7 +739,7 @@ def record_trade(
     }
 
 
-def build_reminder_messages(
+def _legacy_build_reminder_messages_unused(
     params: dict[str, Any],
     fund_code: str,
     fund_name: str | None,
@@ -630,7 +760,7 @@ def build_reminder_messages(
     }
 
 
-def generate_reminders(
+def _legacy_generate_reminders_unused(
     connection: sqlite3.Connection,
     *,
     account_id: str,
@@ -684,6 +814,164 @@ def generate_reminders(
 def parse_local_time(value: str) -> time:
     hour_text, minute_text = value.split(":", 1)
     return time(hour=int(hour_text), minute=int(minute_text))
+
+
+def is_schedule_time_reached(
+    current_time_local: str | None,
+    scheduled_time_local: str | None,
+) -> bool:
+    if not scheduled_time_local or not current_time_local:
+        return True
+    return parse_local_time(current_time_local) >= parse_local_time(scheduled_time_local)
+
+
+def build_reminder_messages(
+    params: dict[str, Any],
+    fund_code: str,
+    fund_name: str | None,
+) -> dict[str, str]:
+    capital = params["capital"]
+    scheduling = params["scheduling"]
+    target_name = fund_name or fund_code
+    monthly_amount = capital["monthly_cash_pool_inflow"]
+    weekly_pretrade = get_weekly_schedule_config(
+        scheduling,
+        "weekly_pretrade_reminder",
+        legacy_weekday_key="weekly_pretrade_reminder_weekday",
+        legacy_time_key="weekly_pretrade_reminder_time_local",
+    )
+    weekly_trade = get_weekly_schedule_config(
+        scheduling,
+        "weekly_trade_reminder",
+        legacy_weekday_key="weekly_trade_reminder_weekday",
+        legacy_time_key="weekly_trade_reminder_time_local",
+    )
+    weekly_dca = get_weekly_schedule_config(
+        scheduling,
+        "weekly_dca",
+        legacy_weekday_key="weekly_dca_weekday",
+    )
+    monthly_reminder = get_monthly_schedule_config(
+        scheduling,
+        "monthly_cash_inflow_reminder",
+        legacy_rule_key="monthly_cash_inflow_reminder_rule",
+        legacy_day_of_month_key="monthly_cash_inflow_reminder_day_of_month",
+        legacy_time_key="monthly_cash_inflow_reminder_time_local",
+    )
+    pretrade_time = f" at {weekly_pretrade['time_local']}" if weekly_pretrade["time_local"] else ""
+    trade_time = f" at {weekly_trade['time_local']}" if weekly_trade["time_local"] else ""
+    monthly_time = f" at {monthly_reminder['time_local']}" if monthly_reminder["time_local"] else ""
+    trade_day = WEEKDAY_LABELS.get(
+        str(weekly_trade["weekday"] or weekly_dca["weekday"] or "").lower(),
+        str(weekly_trade["weekday"] or weekly_dca["weekday"] or "configured_trade_day"),
+    )
+    monthly_rule = (
+        f"day_of_month={monthly_reminder['day_of_month']}"
+        if monthly_reminder["schedule_type"] == "day_of_month"
+        else monthly_reminder["schedule_type"]
+    )
+    return {
+        "weekly_pretrade_reminder": (
+            f"Pretrade reminder{pretrade_time}: review {target_name}({fund_code}) before the configured "
+            f"{trade_day} trade day."
+        ),
+        "weekly_trade_reminder": (
+            f"Trade reminder{trade_time}: review {target_name}({fund_code}) and decide "
+            f"buy_dca / buy_dip / sell_take_profit / hold."
+        ),
+        "monthly_cash_inflow_reminder": (
+            f"Monthly cash reminder{monthly_time}: add {monthly_amount} to cash_pool for "
+            f"{target_name}({fund_code}) on schedule {monthly_rule}."
+        ),
+    }
+
+
+def generate_reminders(
+    connection: sqlite3.Connection,
+    *,
+    account_id: str,
+    fund_code: str,
+    fund_name: str | None,
+    as_of_date: date,
+    as_of_time_local: str | None = None,
+    params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    scheduling = params["scheduling"]
+    weekday_name = as_of_date.strftime("%A").lower()
+    reminder_types: list[str] = []
+
+    weekly_pretrade = get_weekly_schedule_config(
+        scheduling,
+        "weekly_pretrade_reminder",
+        legacy_weekday_key="weekly_pretrade_reminder_weekday",
+        legacy_time_key="weekly_pretrade_reminder_time_local",
+    )
+    weekly_trade = get_weekly_schedule_config(
+        scheduling,
+        "weekly_trade_reminder",
+        legacy_weekday_key="weekly_trade_reminder_weekday",
+        legacy_time_key="weekly_trade_reminder_time_local",
+    )
+    monthly_reminder = get_monthly_schedule_config(
+        scheduling,
+        "monthly_cash_inflow_reminder",
+        legacy_rule_key="monthly_cash_inflow_reminder_rule",
+        legacy_day_of_month_key="monthly_cash_inflow_reminder_day_of_month",
+        legacy_time_key="monthly_cash_inflow_reminder_time_local",
+    )
+    monthly_reminder_date = resolve_monthly_schedule_date(
+        as_of_date,
+        schedule_type=monthly_reminder["schedule_type"],
+        day_of_month=monthly_reminder["day_of_month"],
+    )
+
+    if (
+        weekly_pretrade["weekday"]
+        and weekday_name == weekly_pretrade["weekday"]
+        and is_schedule_time_reached(as_of_time_local, weekly_pretrade["time_local"])
+    ):
+        reminder_types.append("weekly_pretrade_reminder")
+    if (
+        weekly_trade["weekday"]
+        and weekday_name == weekly_trade["weekday"]
+        and is_schedule_time_reached(as_of_time_local, weekly_trade["time_local"])
+    ):
+        reminder_types.append("weekly_trade_reminder")
+    if (
+        as_of_date == monthly_reminder_date
+        and is_schedule_time_reached(as_of_time_local, monthly_reminder["time_local"])
+    ):
+        reminder_types.append("monthly_cash_inflow_reminder")
+
+    messages = build_reminder_messages(params, fund_code, fund_name)
+    now = utc_now_iso()
+    for reminder_type in reminder_types:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO strategy_reminders (
+                account_id,
+                fund_code,
+                reminder_date,
+                reminder_type,
+                message,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'generated', ?)
+            """,
+            (account_id, fund_code, as_of_date.isoformat(), reminder_type, messages[reminder_type], now),
+        )
+
+    rows = connection.execute(
+        """
+        SELECT reminder_date, reminder_type, message, status
+        FROM strategy_reminders
+        WHERE account_id = ? AND fund_code = ? AND reminder_date = ?
+        ORDER BY reminder_type
+        """,
+        (account_id, fund_code, as_of_date.isoformat()),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def build_account_market_snapshot(
@@ -798,8 +1086,23 @@ def evaluate_strategy_state(
     take_profit = params["take_profit"]
     risk = params["risk"]
     weekday_name = as_of_date.strftime("%A").lower()
-    is_weekly_dca_day = weekday_name == scheduling["weekly_dca_weekday"]
-    is_monthly_cash_inflow_day = as_of_date == second_to_last_business_day(as_of_date)
+    weekly_dca = get_weekly_schedule_config(
+        scheduling,
+        "weekly_dca",
+        legacy_weekday_key="weekly_dca_weekday",
+    )
+    monthly_cash_inflow = get_monthly_schedule_config(
+        scheduling,
+        "monthly_cash_inflow",
+        legacy_rule_key="monthly_cash_inflow_rule",
+        legacy_day_of_month_key="monthly_cash_inflow_day_of_month",
+    )
+    is_weekly_dca_day = weekday_name == str(weekly_dca["weekday"] or "").lower()
+    is_monthly_cash_inflow_day = as_of_date == resolve_monthly_schedule_date(
+        as_of_date,
+        schedule_type=monthly_cash_inflow["schedule_type"],
+        day_of_month=monthly_cash_inflow["day_of_month"],
+    )
 
     spacing_days = None
     if last_add_trade_date:
@@ -975,6 +1278,7 @@ def evaluate_strategy(
         fund_code=fund_code,
         fund_name=market_state.get("fund_name"),
         as_of_date=as_of_date,
+        as_of_time_local=trade_time_local,
         params=params,
     )
 

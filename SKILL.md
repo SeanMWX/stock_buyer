@@ -1,0 +1,167 @@
+---
+name: fund_buying_decision
+description: Parameterize and apply a Chinese mutual-fund buy, add, reduce, or hold strategy driven by price drawdown, recurring DCA, cash-pool management, and position limits. Use when Codex needs to maintain the strategy thresholds in SKILL.md, explain or simulate a daily decision, update the bundled Eastmoney-to-SQLite importer, or produce a detailed report for a fund such as 011598.
+---
+
+# Fund Buying Decision
+
+## Overview
+
+Use this skill to keep a reusable fund trading framework in one place.
+Prefer changing the parameter block below instead of rewriting numeric rules in prose.
+
+Return one explicit action per decision cycle:
+
+- `buy_dca`
+- `buy_dip`
+- `sell_take_profit`
+- `hold`
+- `skip_data_missing`
+
+If multiple actions trigger on the same day, prefer the risk-reducing action and keep the one-trade-per-day rule.
+
+## Strategy Parameters
+
+Fill or revise this block before relying on the strategy. Treat every `TODO` as unresolved.
+
+```yaml
+strategy_parameters:
+  universe:
+    allowed_fund_types:
+      - index_fund
+      - equity_fund
+    disallowed_fund_types:
+      - bond_fund
+      - money_market_fund
+
+  capital:
+    initial_cash: 1000
+    weekly_dca_amount: 100
+    monthly_cash_pool_inflow: 1000
+    fee_rate_source: fund_current_rate
+
+  scheduling:
+    weekly_pretrade_reminder_weekday: monday
+    weekly_dca_weekday: tuesday
+    weekly_trade_reminder_weekday: tuesday
+    monthly_cash_inflow_rule: second_to_last_business_day
+    monthly_cash_inflow_reminder_rule: second_to_last_business_day
+    trade_cutoff_local_time: "15:00"
+    backtest_execution_mode: next_trading_day
+    max_trades_per_day: 1
+
+  price_state:
+    recent_high_lookback_trading_days: 20
+    dip_thresholds_pct: [5, 10, 15]
+    dip_base_buy_amounts: [100, 150, 200]
+    min_trading_days_between_adds: 5
+
+  take_profit:
+    profit_thresholds_pct: [10, 20]
+    profit_sell_ratios_pct: [10, 20]
+
+  risk:
+    max_position_ratio_pct: 80
+    min_position_ratio_pct: 20
+```
+
+## Required Inputs
+
+Do not invent missing inputs. If a required field is unavailable, return `skip_data_missing` and explain what is missing.
+
+Required runtime inputs:
+
+- `fund_code`
+- `current_price`
+- `cost_price`
+- `cash_pool`
+- `position_value`
+- `recent_high`
+- `today`
+- `trade_time_local`
+- `last_add_trade_date`
+- `is_weekly_dca_day`
+- `is_monthly_cash_inflow_day`
+
+Derived values:
+
+- `total_asset = cash_pool + position_value`
+- `position_ratio = position_value / total_asset`
+- `drawdown_pct = (recent_high - current_price) / recent_high * 100`
+- `profit_pct = (current_price - cost_price) / cost_price * 100`
+- `effective_fee_rate_pct = imported fund current_rate when available`
+
+## Daily Workflow
+
+1. Refresh or read fund data.
+   For Eastmoney price data, run `python {baseDir}/scripts/import_eastmoney_pingzhongdata.py 011598` or replace `011598` with another fund code.
+2. If today is Monday, issue the weekly pretrade reminder for Tuesday.
+3. If today is Tuesday, issue the trading reminder and then evaluate the strategy.
+4. If today is the second-to-last business day of the month, remind the user to add the monthly cash inflow.
+5. Record the monthly cash inflow only after it is actually added to `cash_pool`.
+   Use `python {baseDir}/scripts/record_strategy_trade.py 011598 --trade-type cash_inflow --gross-amount 1000`.
+6. Update `current_price`, `recent_high`, `total_asset`, and `position_ratio`.
+7. Evaluate take-profit rules first when both buy and sell could trigger on the same day.
+8. Evaluate dip-buy rules only if the add-spacing rule is satisfied and cash is available.
+9. Evaluate weekly DCA only if no higher-priority trade was selected.
+10. Re-check max and min position limits after sizing the candidate trade.
+11. Execute at the configured cutoff rule.
+   For backtests, prefer `next_trading_day` execution to avoid future leakage.
+
+## Decision Rules
+
+### DCA
+
+- Use `weekly_dca_amount` as the fixed recurring DCA amount.
+- Size the actual DCA as `min(weekly_dca_amount, cash_pool)`.
+- Skip DCA if there is already a higher-priority trade on the same day.
+
+### Dip Buy
+
+- Compute `drawdown_pct` from `recent_high`.
+- Use only the deepest triggered threshold from `dip_thresholds_pct`.
+- Map that threshold to the aligned base amount in `dip_base_buy_amounts`.
+- Size the actual buy as the minimum of:
+  - base buy amount
+  - available `cash_pool`
+  - remaining room under `max_position_ratio_pct`
+- Reject the dip buy if the last add trade is within `min_trading_days_between_adds`.
+
+### Take Profit
+
+- Use only the highest triggered threshold from `profit_thresholds_pct`.
+- Map that threshold to the aligned sell ratio in `profit_sell_ratios_pct`.
+- Size the actual sell so the post-trade position ratio does not go below `min_position_ratio_pct`.
+- Send sell proceeds back into `cash_pool`.
+
+### Position And Cash Controls
+
+- Keep all buys funded by `cash_pool`.
+- Keep monthly inflows and sell proceeds inside `cash_pool`.
+- Never exceed `max_position_ratio_pct`.
+- Never reduce below `min_position_ratio_pct`.
+- Include the imported fund `current_rate` in trade sizing when the user requires fees.
+
+## Fund Detail Reporting
+
+- Use `python {baseDir}/scripts/report_fund_details.py 011598 --refresh` to fetch and summarize a fund.
+- Include the latest available fund identity, fee rate, minimum subscription, net worth, recent 20-trading-day high, drawdown, return metrics, stock-position estimate, manager information, asset allocation, holder structure, and top holdings.
+- If local data is missing, allow the reporting script to refresh the SQLite database first.
+
+## Strategy Runtime Commands
+
+- Initialize or overwrite the stored account state:
+  `python {baseDir}/scripts/manage_strategy_account.py upsert 011598 --account-id main --cash-pool 1000 --position-units 0 --fund-type equity_fund`
+- Record a real cash flow or manual trade:
+  `python {baseDir}/scripts/record_strategy_trade.py 011598 --account-id main --trade-type cash_inflow --gross-amount 1000`
+- Generate reminders and evaluate the strategy:
+  `python {baseDir}/scripts/evaluate_strategy.py 011598 --account-id main --refresh`
+- Confirm and execute the currently suggested strategy trade only after the user agrees:
+  `python {baseDir}/scripts/confirm_strategy_action.py 011598 --account-id main --refresh --expected-action buy_dca`
+
+## References To Load
+
+- `references/strategy_parameters.md`
+  Use when revising thresholds, clarifying formulas, or resolving ambiguous parameter choices.
+- `references/data_inputs.md`
+  Use when working with the SQLite importer, mapping database tables to strategy inputs, planning the next strategy-state tables, or assembling a fund detail report.

@@ -13,10 +13,40 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import import_eastmoney_pingzhongdata as importer
+import strategy_engine as engine
 
 
 DEFAULT_DB_PATH = importer.DEFAULT_DB_PATH
 DEFAULT_LOOKBACK_DAYS = 20
+
+
+def load_default_alert_thresholds_pct() -> list[float]:
+    params = engine.load_strategy_parameters()
+    raw_values = params["price_state"]["dip_thresholds_pct"]
+    return [float(value) for value in raw_values]
+
+
+def normalize_alert_thresholds_pct(values: list[float] | None = None) -> list[float]:
+    raw_values = values if values else load_default_alert_thresholds_pct()
+    unique_values = sorted({float(value) for value in raw_values})
+    if not unique_values:
+        raise ValueError("At least one alert threshold percentage is required")
+    return unique_values
+
+
+def build_drawdown_alert_status(drawdown_pct: float | None, thresholds_pct: list[float] | None = None) -> dict[str, Any]:
+    normalized_thresholds = normalize_alert_thresholds_pct(thresholds_pct)
+    triggered_thresholds_pct = [
+        value for value in normalized_thresholds if drawdown_pct is not None and drawdown_pct >= value
+    ]
+    untriggered_thresholds_pct = [value for value in normalized_thresholds if value not in triggered_thresholds_pct]
+    return {
+        "thresholds_pct": normalized_thresholds,
+        "triggered_thresholds_pct": triggered_thresholds_pct,
+        "untriggered_thresholds_pct": untriggered_thresholds_pct,
+        "highest_triggered_threshold_pct": max(triggered_thresholds_pct) if triggered_thresholds_pct else None,
+        "triggered": bool(triggered_thresholds_pct),
+    }
 
 
 def format_pct(value: float | None) -> str:
@@ -288,6 +318,7 @@ def build_report(connection: sqlite3.Connection, fund_code: str, snapshot_id: in
     holder_category, holder_structure = fetch_latest_report_metrics(connection, snapshot_id, "holder_structure")
     buy_sell_category, buy_sedemption = fetch_latest_report_metrics(connection, snapshot_id, "buy_sedemption")
     performance = fetch_performance_metrics(connection, snapshot_id)
+    drawdown_alerts = build_drawdown_alert_status(drawdown_pct)
 
     return {
         "fund": fund,
@@ -296,6 +327,7 @@ def build_report(connection: sqlite3.Connection, fund_code: str, snapshot_id: in
         "latest_accumulated_worth": latest_ac_worth,
         "recent_high": recent_high,
         "drawdown_pct": drawdown_pct,
+        "drawdown_alerts": drawdown_alerts,
         "latest_position_estimate": latest_position_estimate,
         "return_metrics": return_metrics,
         "asset_allocation": {"category": asset_allocation_category, "rows": asset_allocation},
@@ -318,6 +350,18 @@ def render_report(report: dict[str, Any]) -> str:
     recent_high = report["recent_high"]
     latest_position_estimate = report["latest_position_estimate"]
     returns = report["return_metrics"]
+    drawdown_alerts = report["drawdown_alerts"]
+    alert_thresholds = ", ".join(format_pct(value) for value in drawdown_alerts["thresholds_pct"])
+    alert_triggered = (
+        ", ".join(format_pct(value) for value in drawdown_alerts["triggered_thresholds_pct"])
+        if drawdown_alerts["triggered_thresholds_pct"]
+        else "无"
+    )
+    alert_untriggered = (
+        ", ".join(format_pct(value) for value in drawdown_alerts["untriggered_thresholds_pct"])
+        if drawdown_alerts["untriggered_thresholds_pct"]
+        else "无"
+    )
 
     lines = [
         f"基金代码: {fund['fund_code']}",
@@ -332,6 +376,9 @@ def render_report(report: dict[str, Any]) -> str:
         f"- 最新累计净值: {format_num(latest_ac_worth['value']) if latest_ac_worth else 'N/A'} ({latest_ac_worth['point_date'] if latest_ac_worth else 'N/A'})",
         f"- 最近{report['lookback_days']}个交易日高点: {format_num(recent_high['value']) if recent_high else 'N/A'} ({recent_high['point_date'] if recent_high else 'N/A'})",
         f"- 距最近高点回撤: {format_pct(report['drawdown_pct'])}",
+        f"- 回撤预警档位: {alert_thresholds}",
+        f"- 已触发预警: {alert_triggered}",
+        f"- 未触发预警: {alert_untriggered}",
         f"- 最新股票仓位估算: {format_pct(latest_position_estimate['value']) if latest_position_estimate else 'N/A'} ({latest_position_estimate['point_date'] if latest_position_estimate else 'N/A'})",
         "",
         "区间收益:",

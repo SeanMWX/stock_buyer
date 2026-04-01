@@ -230,6 +230,15 @@ Derived values:
 - Include the latest available fund identity, fee rate, minimum subscription, net worth, recent 20-trading-day high, drawdown, return metrics, stock-position estimate, manager information, asset allocation, holder structure, and top holdings.
 - If local data is missing, allow the reporting script to refresh the SQLite database first.
 
+## Drawdown Alerts
+
+- Use `python {baseDir}/scripts/check_fund_alert.py 004475` to check drawdown alerts against the configured `dip_thresholds_pct` tiers in `SKILL.md`.
+- To override the default tiers at runtime, repeat `--threshold-pct`, for example:
+  `python {baseDir}/scripts/check_fund_alert.py 004475 --threshold-pct 5 --threshold-pct 10 --threshold-pct 15`
+- This script only computes the alert state and returns structured output.
+- Do not implement email or Feishu delivery inside this skill.
+  If the user wants delivery, hand the alert result to the dedicated notification skill instead.
+
 ## Strategy Runtime Commands
 
 Default SQLite location:
@@ -245,6 +254,8 @@ Default SQLite location:
   `python {baseDir}/scripts/evaluate_strategy.py 011598 --account-id main --refresh`
 - Confirm and execute the currently suggested strategy trade only after the user agrees:
   `python {baseDir}/scripts/confirm_strategy_action.py 011598 --account-id main --refresh --expected-action buy_dca`
+- Check whether a drawdown alert is triggered:
+  `python {baseDir}/scripts/check_fund_alert.py 004475`
 
 ## References To Load
 

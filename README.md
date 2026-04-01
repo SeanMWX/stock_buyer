@@ -24,6 +24,7 @@ The skill currently supports:
 
 - importing Eastmoney `pingzhongdata` JS payloads into local SQLite
 - showing a detailed fund report for a fund code
+- checking drawdown alerts such as "remind me when the fund is down 10% from its recent high"
 - maintaining a strategy account state with `cash_pool`, `position_units`, and `avg_cost_price`
 - recording manual cash flows and manual trades
 - generating Monday / Tuesday / monthly reminders
@@ -45,6 +46,10 @@ Current strategy flow is human-in-the-loop:
 - Show a detailed fund report:
 
 `python scripts/report_fund_details.py 011598 --refresh`
+
+- Check whether drawdown alert tiers are triggered:
+
+`python scripts/check_fund_alert.py 004475`
 
 - Create or overwrite a stored strategy account:
 
